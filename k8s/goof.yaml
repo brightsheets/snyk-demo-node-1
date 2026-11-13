@@ -1,0 +1,238 @@
+# Secure deployment of the goof demo app: namespace, MongoDB, app, network policies.
+# The MongoDB credentials Secret (goof-mongo-auth) is created by deploy/kind.sh at deploy time,
+# never committed. MySQL is intentionally not deployed (it only backs the /users SQL-injection
+# demo route), which removes that attack path.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: goof
+  labels:
+    # Kubernetes Pod Security Admission: reject any pod that isn't "restricted"-compliant.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: goof
+  namespace: goof
+automountServiceAccountToken: false
+---
+# ---------------- MongoDB ----------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goof-mongo
+  namespace: goof
+  labels: { app: goof-mongo }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: goof-mongo }
+  template:
+    metadata:
+      labels: { app: goof-mongo }
+    spec:
+      serviceAccountName: goof
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10999
+        runAsGroup: 10999
+        fsGroup: 10999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: mongo
+          # Newest MongoDB that mongoose 4.2.4's driver (2.0.x, legacy wire protocol) can talk to.
+          # End of life: accepted risk, mitigated by network isolation below. Pin by digest.
+          image: mongo:5.0
+          imagePullPolicy: Always
+          args: ["--auth", "--bind_ip_all"]
+          ports:
+            - name: mongo
+              containerPort: 27017
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom: { secretKeyRef: { name: goof-mongo-auth, key: username } }
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: goof-mongo-auth, key: password } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          readinessProbe:
+            tcpSocket: { port: mongo }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: mongo }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - { name: data, mountPath: /data/db }
+            - { name: configdb, mountPath: /data/configdb }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        # Demo data is disposable; use a PersistentVolumeClaim for anything real.
+        - { name: data, emptyDir: {} }
+        - { name: configdb, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: goof-mongo
+  namespace: goof
+spec:
+  selector: { app: goof-mongo }
+  ports:
+    - { name: mongo, port: 27017, targetPort: mongo }
+---
+# ---------------- goof app ----------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goof
+  namespace: goof
+  labels: { app: goof }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: goof }
+  template:
+    metadata:
+      labels: { app: goof }
+    spec:
+      serviceAccountName: goof
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: goof
+          image: goof-secure:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3001
+          env:
+            - name: MONGO_USER
+              valueFrom: { secretKeyRef: { name: goof-mongo-auth, key: username } }
+            - name: MONGO_PASS
+              valueFrom: { secretKeyRef: { name: goof-mongo-auth, key: password } }
+            - name: MONGODB_URI
+              value: "mongodb://$(MONGO_USER):$(MONGO_PASS)@goof-mongo.goof.svc:27017/express-todo?authSource=admin"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            # The app extracts uploaded zips under /tmp; the root filesystem stays read-only.
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: goof
+  namespace: goof
+spec:
+  type: ClusterIP   # reached through `kubectl port-forward`; nothing is exposed on the host network
+  selector: { app: goof }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+# ---------------- network policies ----------------
+# Deny everything by default, then allow only what the app needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: goof
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: goof
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: goof-to-mongo
+  namespace: goof
+spec:
+  podSelector:
+    matchLabels: { app: goof }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: goof-mongo }
+      ports:
+        - { protocol: TCP, port: 27017 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-from-goof-only
+  namespace: goof
+spec:
+  podSelector:
+    matchLabels: { app: goof-mongo }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: goof }
+      ports:
+        - { protocol: TCP, port: 27017 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: goof-http-in
+  namespace: goof
+spec:
+  podSelector:
+    matchLabels: { app: goof }
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 3001 }
