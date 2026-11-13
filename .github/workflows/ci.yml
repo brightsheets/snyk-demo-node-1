@@ -1,0 +1,24 @@
+# Runs brightsheets/reusable-workflows/.github/workflows/js-ci.yaml@v1: build, Snyk Open Source + Code, Docker build + Snyk Container.
+# Needs secret SNYK_TOKEN (without it the Snyk scans are skipped with a warning).
+name: CI
+on:
+  push:
+    branches: [main, "hotfix/**"]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+  pull-requests: write
+  packages: write
+jobs:
+  ci:
+    uses: brightsheets/reusable-workflows/.github/workflows/js-ci.yaml@v1
+    with:
+      node-version: "18"
+      snyk-org: brightsheets
+      docker-build: true
+      dry-run: true   # demo app: build and scan the image, never push it
+    secrets:
+      snyk-token: ${{ secrets.SNYK_TOKEN }}
