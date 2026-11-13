@@ -12,7 +12,7 @@ set -euo pipefail
 
 CLUSTER=goof
 IMAGE=goof-secure:local
-CALICO_VERSION=v3.29.1
+CALICO_VERSION=v3.33.0
 cd "$(dirname "$0")/.."
 
 if [[ "${1:-}" == "--delete" ]]; then
