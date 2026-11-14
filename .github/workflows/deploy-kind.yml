@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   build:
-    uses: brightsheets/reusable-workflows/.github/workflows/docker-build.yaml@v1
+    uses: test-snyk-demo/reusable-workflows/.github/workflows/docker-build.yaml@v1
     permissions:
       contents: read
       packages: write
@@ -29,7 +29,7 @@ jobs:
 
   container-scan:
     needs: build
-    uses: brightsheets/reusable-workflows/.github/workflows/docker-snyk-scan.yaml@v1
+    uses: test-snyk-demo/reusable-workflows/.github/workflows/docker-snyk-scan.yaml@v1
     permissions:
       contents: read
       actions: read
