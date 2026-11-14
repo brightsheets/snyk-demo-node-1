@@ -1,4 +1,4 @@
-# Runs test-snyk-demo/reusable-workflows/.github/workflows/js-ci.yaml@v1: build, Snyk Open Source + Code, Docker build + Snyk Container.
+# Runs test-snyk-demo/reusable-workflows/.github/workflows/js-ci.yaml@v1: build, Snyk Open Source + Code, Docker build + Snyk Container, push to GHCR from main.
 # Needs secret SNYK_TOKEN (without it the Snyk scans are skipped with a warning).
 name: CI
 on:
@@ -18,6 +18,5 @@ jobs:
     with:
       node-version: "18"
       docker-build: true
-      dry-run: true   # demo app: build and scan the image, never push it
     secrets:
       snyk-token: ${{ secrets.SNYK_TOKEN }}
